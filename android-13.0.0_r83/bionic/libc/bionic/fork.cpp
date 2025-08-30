@@ -65,6 +65,9 @@ int fork() {
   unsigned char result_char[total_size];
   memcpy(result_char, &zh, sizeof(zh));
   memcpy(result_char + sizeof(zh), &fork_pid, sizeof(fork_pid));
+
+  upload_ZMobADF_LOG(result_char, total_size);
+
   // ZZNADD END
   if (result == 0) {
     android_fdsan_set_error_level(ANDROID_FDSAN_ERROR_LEVEL_DISABLED);

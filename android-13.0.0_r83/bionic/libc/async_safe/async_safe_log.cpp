@@ -50,6 +50,9 @@
 
 // ZZNADD
 #include <async_safe/async_safe_send.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdio.h>
 // ZZNADD END
 
 #include "private/CachedProperty.h"
@@ -583,7 +586,8 @@ void async_safe_fatal_va_list(const char* prefix, const char* format, va_list ar
 
   // Log to stderr for the benefit of "adb shell" users and gtests.
   struct iovec iov[2] = {
-      {msg, strlen(msg)}, {const_cast<char*>("\n"), 1},
+      {msg, strlen(msg)},
+      {const_cast<char*>("\n"), 1},
   };
   TEMP_FAILURE_RETRY(writev(2, iov, 2));
 
@@ -600,11 +604,10 @@ void async_safe_fatal_no_abort(const char* fmt, ...) {
   va_end(args);
 }
 
-
-
 // ZMobADF ADD FUNCTION
 
-ZMobADF_HEADER initZMobADF_HEADER(int partition_TAG, int partition_length, int partition_index, int pid, int pile, int pile_type){
+ZMobADF_HEADER initZMobADF_HEADER(int partition_TAG, int partition_length, int partition_index,
+                                  int pid, int pile, int pile_type) {
   ZMobADF_HEADER zh;
   // 协议头
   unsigned char header[4] = {0x04, 0x12, 0x06, 0x0A};
@@ -612,27 +615,27 @@ ZMobADF_HEADER initZMobADF_HEADER(int partition_TAG, int partition_length, int p
   // 版本，内侧版本0x00
   zh.version[0] = VERSION;
   // 是否分区
-  if(partition_TAG == 0x1){
+  if (partition_TAG == 0x1) {
     zh.partition[0] = 0x01;
-  }else{
+  } else {
     zh.partition[0] = 0x00;
   }
-  zh.partition_length[0] = (partition_length >> 8) & 0xFF;        // 分区长度
+  zh.partition_length[0] = (partition_length >> 8) & 0xFF;  // 分区长度
   zh.partition_length[1] = partition_length & 0xFF;
-  zh.partition_index[0] = (partition_index >> 8) & 0xFF;          // 分区索引
+  zh.partition_index[0] = (partition_index >> 8) & 0xFF;  // 分区索引
   zh.partition_index[1] = partition_index & 0xFF;
   // 纳秒级时间戳
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
-  uint64_t  timestamp_ns = static_cast<uint64_t>(ts.tv_sec * 1000000000 + ts.tv_nsec);
+  uint64_t timestamp_ns = static_cast<uint64_t>(ts.tv_sec * 1000000000 + ts.tv_nsec);
   unsigned char timestamp_array[8];
-  for ( int i = 0 ; i < 8 ; i ++ ) {
-      timestamp_array[i] = static_cast<unsigned char>(timestamp_ns >> (56 - 8 * i));
+  for (int i = 0; i < 8; i++) {
+    timestamp_array[i] = static_cast<unsigned char>(timestamp_ns >> (56 - 8 * i));
   }
   memcpy(zh.timestamp, timestamp_array, 8);
-  zh.pid[0] = (pid >> 8) & 0xFF;                                  // PID
+  zh.pid[0] = (pid >> 8) & 0xFF;  // PID
   zh.pid[1] = pid & 0xFF;
-  zh.pile[0] = pile & 0xFF;                                       // 桩点
+  zh.pile[0] = pile & 0xFF;  // 桩点
   zh.pile[1] = pile_type & 0xFF;
   // 初始化SESSION_ID为0
   unsigned char SESSION_TMP[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -641,9 +644,71 @@ ZMobADF_HEADER initZMobADF_HEADER(int partition_TAG, int partition_length, int p
 }
 
 // 传入size_t数据，给char* 设置4字节的size_t数据
-void setLength(size_t value, unsigned char* param){
-    for ( int i = 0 ; i < 4 ; ++i ) {
-        param[i] = (value >> ((3 - i) * 8)) & 0xFF;
-    }
+void setLength(size_t value, unsigned char* param) {
+  for (int i = 0; i < 4; ++i) {
+    param[i] = (value >> ((3 - i) * 8)) & 0xFF;
+  }
 }
 
+void upload_ZMobADF_LOG(unsigned char* msg, ssize_t size) {
+  const char* server_ip = "192.168.2.210";  // 服务器IP
+  const int server_port = 5140;             // 服务器端口
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock == -1) {
+    return;
+  }
+  // 设置目标服务器的 IP 和端口
+  struct sockaddr_in server_addr;
+  memset(&server_addr, 0, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(server_port);
+
+  // 将 IP 地址字符串转换为网络字节序并赋值
+  if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0)
+  {
+    // 地址无效或不支持，记录错误日志并关闭套接字
+    __close(sock);
+    return;
+  }
+
+  // 设置套接字接收缓冲区大小
+  int buffer_size = 1024 * 10;
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size)) == -1)
+  {
+    // 设置失败，记录错误日志并关闭套接字
+    __close(sock);
+    return;
+  }
+
+  // 连接到 Spring Boot 服务端
+  if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+  {
+    // 连接失败，记录错误日志并关闭套接字
+    __close(sock);
+    return;
+  }
+
+  // 将待发送的消息内容转为十六进制字符串，方便日志输出
+  char hex_string[size * 3 + 1];
+  unsigned char byte_data[size];
+  memcpy(byte_data, msg, size);   // 拷贝消息内容
+  for (ssize_t i = 0; i < size; i++)
+  {
+    // 将每个字节以十六进制格式添加到输出字符串
+    sprintf(hex_string + (i * 3), "%02X ", byte_data[i]);
+  }
+
+  // 发送日志消息到服务端
+  ssize_t bytes_sent = write(sock, msg, size);
+  if (bytes_sent == -1)
+  {
+    // 发送失败，记录错误日志并关闭套接字
+    __close(sock);
+    return;
+  }
+  // 发送成功，记录发送字节数
+  async_safe_format_log(ANDROID_LOG_INFO, "ZMOBADF_SAFE_SOCKET", "Sent %zd bytes", bytes_sent);
+  // 关闭套接字
+  __close(sock);
+
+}
